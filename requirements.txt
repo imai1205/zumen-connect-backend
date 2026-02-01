@@ -1,0 +1,45 @@
+# FastAPI ワーカー依存関係
+
+# Webフレームワーク
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# HTTP クライアント
+httpx==0.27.2
+
+# Supabase クライアント
+supabase==2.9.1
+# postgrest は supabase の依存関係として自動インストールされるため、明示的な指定は不要
+# postgrest==0.16.1
+
+# GCS クライアント
+google-cloud-storage==2.18.2
+google-auth==2.34.0
+
+# Pinecone クライアント
+pinecone>=5.0.0
+
+# PDF処理
+PyPDF2==3.0.1
+pdf2image==1.17.0
+Pillow==10.4.0
+
+# OCR（Google Cloud Vision API）
+google-cloud-vision>=3.0.0
+
+# AI/LLM（Gemini: AI抽出 + 検索用埋め込み）
+google-generativeai>=0.3.0
+
+# ベクトル化
+sentence-transformers==3.0.1
+# torch は sentence-transformers の依存関係として自動インストールされるため、明示的な指定は不要
+# torch==2.5.1  # 利用可能なバージョンがないためコメントアウト
+
+# 3D変換（FreeCAD/OpenCASCADE はシステムライブラリが必要）
+# 必要に応じて追加
+
+# ユーティリティ
+python-dotenv==1.0.1
+python-multipart==0.0.12

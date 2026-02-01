@@ -1,0 +1,964 @@
+# 開発コマンド集（Windows PowerShell）
+
+開発中によく使うコマンドをまとめたリファレンスです。
+
+---
+
+## ⚠️ 開発時の重要ルール（作業前に必ず確認）
+
+### クレジット消費の最小化
+- **コード編集・ファイル作成は最小限に**
+- 不要なファイル（特にMDファイル）は作成しない
+- 既存ファイルへの追記を優先する
+- 一時的な情報はこのファイルの「メモ」セクションに追記
+- コード変更は必要最小限の範囲で実施
+
+### ファイル作成の判断基準
+- 新規MDファイル作成は原則禁止
+- 既存のMDファイル（このファイル、README.md等）に追記
+- コードファイルは必要な場合のみ作成
+- 一時的な情報はメモとして既存ファイルに追記
+
+### コード編集の原則
+- 変更前に既存のコードパターンを確認
+- 一度に大量の変更を避ける
+- 段階的に実装する
+- 不要なコードは削除する
+
+### パフォーマンス最適化ルール（全マスターデータに適用必須）
+
+見積もり機能で実装した最適化ルールを、**すべてのマスターデータ（顧客、エンドユーザー、販売店、テンプレート、品番）に適用**します。
+
+#### ルール1: JOINクエリで複数回のクエリを1回に統合
+- **目的**: データベースクエリ回数を削減（3-4回 → 1回）
+- **適用箇所**: 
+  - 一覧取得API（関連データがある場合）
+  - 詳細取得API（関連データがある場合）
+- **例**: 見積一覧は3回（quotes + customers + end_users）→ 1回のJOIN
+
+#### ルール2: Server Component化 + ISR
+- **目的**: 初回表示を高速化、TTFBを改善
+- **適用箇所**: 
+  - 一覧ページ（`app/[resource]/page.tsx`）
+  - 詳細ページ（`app/[resource]/[id]/page.tsx`）
+- **実装**:
+  ```typescript
+  export const revalidate = 60; // ISR: 60秒ごとに再生成
+  ```
+- **注意**: クライアント側のインタラクションが必要な部分は`_components/[Resource]Client.tsx`に分離
+
+#### ルール3: キャッシュヘッダーの追加
+- **目的**: APIレスポンスをキャッシュして負荷を削減
+- **適用箇所**: すべてのAPI Route
+- **実装**:
+  ```typescript
+  // 一覧・詳細API（動的データ）
+  response.headers.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
+  
+  // マスターデータAPI（変更頻度が低い）
+  response.headers.set('Cache-Control', 'public, s-maxage=300, stale-while-revalidate=600');
+  ```
+
+#### ルール4: リンクのプリフェッチ
+- **目的**: 一覧から詳細への遷移を高速化
+- **適用箇所**: すべての一覧コンポーネント
+- **実装**:
+  ```typescript
+  <Link
+    href={`/[resource]/${item.id}`}
+    prefetch={true}
+    onMouseEnter={() => router.prefetch(`/[resource]/${item.id}`)}
+  >
+    {item.name}
+  </Link>
+  ```
+
+#### ルール5: ページネーション（データが多い場合）
+- **目的**: 必要な件数のみ取得して負荷を削減
+- **適用箇所**: 一覧取得API（データが50件以上の場合）
+- **実装**: `page`と`limit`パラメータを使用
+
+#### 適用対象マスターデータ
+1. ✅ 見積もり（実装済み）
+2. ⏳ 顧客マスター
+3. ⏳ エンドユーザーマスター
+4. ⏳ 販売店マスター
+5. ⏳ テンプレート
+6. ⏳ 品番マスター
+
+**重要**: このルールを確認してから作業を開始してください。
+
+---
+
+## 🧩 一時無効化一覧と復帰手順（現状把握）
+
+以下は一時的に無効化（.bak退避）したページです。順次、Server Component + ISR化・リンクのプリフェッチ対応を施しながら復帰します。
+
+- 一時無効化中のページ（.bak）
+  - app/invoices/page.tsx.bak
+  - app/sales/page.tsx.bak
+  - app/orders/page.tsx.bak
+  - app/projects/page.tsx.bak
+  - app/purchase-orders/page.tsx.bak
+  - app/suppliers/new/page.tsx.bak
+  - app/receivings/page.tsx.bak
+  - app/profit/page.tsx.bak
+  - app/products/page.tsx.bak
+  - app/products/new/page.tsx.bak
+  - app/parts/page.tsx.bak
+
+- ルートマップの一時無効化（コメントアウト）
+  - 'purchase-orders', 'receivings', 'profit', 'parts', 'project-list', 'orders' など
+
+- 復帰ガイドライン
+  1) 一覧・詳細をServer Component化（`export const revalidate = 60`）
+  2) APIレスポンスにキャッシュヘッダー（s-maxage）を付与
+  3) 一覧→詳細の`Link`に`prefetch`と`router.prefetch`を追加
+
+- 復帰履歴
+  - 2026-01-08: suppliers 一覧ページを復帰（Server Component化＋クライアントラッパ、routeMap追加）
+
+---
+
+## 🔄 開発サーバーの起動・停止
+
+### 開発サーバーの起動
+```powershell
+npm run dev
+```
+
+### 開発サーバーの停止
+ターミナルで **`Ctrl + C`** を押す
+
+### 強制停止後の再起動
+```powershell
+# 1. Node.jsプロセスを全て停止
+Get-Process -Name node -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 2. .nextフォルダを削除（キャッシュクリア）
+Remove-Item -Path .next -Recurse -Force -ErrorAction SilentlyContinue
+
+# 3. 開発サーバーを再起動
+npm run dev
+```
+
+---
+
+## 🔍 プロセスの確認・タスクキル
+
+## 📦 デモデータ投入（運用系：受注/発注/入荷）
+
+前提: `.env.local` に `NEXT_PUBLIC_SUPABASE_URL` と `SUPABASE_SERVICE_ROLE_KEY` が設定済みであること。
+
+### 受注・発注・入荷のデモデータ投入
+```powershell
+node scripts/insert-ops-demo-data.js
+```
+- 受注: `orders` に2件
+- 発注: `purchase_orders` に2件 + `po_items` に3行
+- 入荷: `receivings` に1件
+
+確認ページ:
+- 受注一覧: http://localhost:3000/orders
+- 発注一覧: http://localhost:3000/purchase-orders
+- 入荷（UIは後続で復帰予定）
+
+### Node.jsプロセスの確認
+```powershell
+# Node.jsプロセスが動いているか確認
+Get-Process -Name node -ErrorAction SilentlyContinue
+
+# 詳細情報を表示（PID、CPU使用率など）
+Get-Process -Name node -ErrorAction SilentlyContinue | Format-Table Id, ProcessName, CPU, WorkingSet -AutoSize
+```
+
+### 特定のポート（3000）を使用しているプロセスの確認
+```powershell
+# ポート3000を使用しているプロセスを確認
+Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | Format-Table OwningProcess, State, LocalAddress, LocalPort
+```
+
+### Node.jsプロセスを全て停止
+```powershell
+# 全てのNode.jsプロセスを強制停止
+Get-Process -Name node -ErrorAction SilentlyContinue | Stop-Process -Force
+```
+
+### 特定のPIDのプロセスを停止
+```powershell
+# PIDを指定して停止（例: PID 12345）
+Stop-Process -Id 12345 -Force
+```
+
+---
+
+## 🧹 キャッシュクリア
+
+### Next.jsのビルドキャッシュをクリア
+```powershell
+# .nextフォルダを削除
+Remove-Item -Path .next -Recurse -Force -ErrorAction SilentlyContinue
+```
+
+### node_modulesを再インストール
+```powershell
+# 1. node_modulesとpackage-lock.jsonを削除
+Remove-Item -Path node_modules -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path package-lock.json -Force -ErrorAction SilentlyContinue
+
+# 2. 再インストール
+npm install
+```
+
+### 完全クリーンビルド
+```powershell
+# 全てクリアして再ビルド
+Remove-Item -Path .next -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path node_modules -Recurse -Force -ErrorAction SilentlyContinue
+Remove-Item -Path package-lock.json -Force -ErrorAction SilentlyContinue
+npm install
+npm run dev
+```
+
+---
+
+## 🏗️ ビルド関連
+
+### 開発モード（開発中）
+
+開発サーバーを起動して、ホットリロードで開発を行います。
+
+```powershell
+# 開発サーバーを起動（ホットリロード有効）
+npm run dev
+```
+
+- **URL**: http://localhost:3000
+- **特徴**: コード変更が自動反映される
+- **用途**: 通常の開発作業
+
+# 方法1: コマンドラインでポートを指定
+npm run dev -- -p 3001
+
+# 方法2: 環境変数でポートを指定
+$env:PORT=3001; npm run dev
+
+# 方法3: package.jsonにスクリプトを追加する場合（推奨）
+# package.jsonのscriptsセクションに以下を追加:
+# "dev:3001": "next dev -p 3001"
+# その後、以下のコマンドで起動:
+npm run dev:3001
+
+### 本番ビルド（デプロイ前の確認）
+
+Vercelなどの本番環境にデプロイする前に、ビルドが正常に完了することを確認します。
+
+```powershell
+# 1. 本番ビルドを実行（エラーがないか確認）
+npm run build
+
+# 2. ビルド結果をローカルで確認（オプション）
+npm run start
+```
+
+- **用途**: デプロイ前の最終確認
+- **確認ポイント**: 
+  - ビルドエラーがないこと
+  - TypeScriptエラーがないこと
+  - すべてのページが正常に生成されること
+
+### ビルドエラーの確認
+
+```powershell
+# 詳細なエラーログをファイルに保存
+npm run build 2>&1 | Tee-Object -FilePath build-log.txt
+
+# ログファイルを確認
+Get-Content build-log.txt
+```
+
+### TypeScript型チェック（ビルド前の確認）
+
+```powershell
+# TypeScriptの型エラーをチェック（ビルドしない）
+npx tsc --noEmit --skipLibCheck
+```
+
+---
+
+## 🚀 GitHubへのプッシュ（デプロイ準備）
+
+Vercelにデプロイする前に、変更をGitHubにプッシュします。
+
+### デプロイ前の一連の手順
+
+```powershell
+# ============================================
+# ステップ1: ビルド確認（必須）
+# ============================================
+# 本番ビルドが正常に完了することを確認
+npm run build
+
+# ビルドが成功したら、次に進みます
+# エラーがある場合は修正してから続行してください
+
+# ============================================
+# ステップ2: Gitの状態確認
+# ============================================
+# 現在のブランチと変更状況を確認
+git status
+
+# リモートリポジトリの確認
+git remote -v
+
+# ============================================
+# ステップ3: 変更をステージング
+# ============================================
+# すべての変更をステージング
+git add .
+
+# または、特定のファイルのみ追加する場合
+# git add app/ src/ package.json next.config.ts
+
+# ============================================
+# ステップ4: コミット
+# ============================================
+# 変更をコミット（メッセージは変更内容に合わせて修正）
+git commit -m "Vercelデプロイ準備: 発注画面の明細管理機能追加、ビルドエラー修正"
+
+# ============================================
+# ステップ5: GitHubにプッシュ
+# ============================================
+# メインブランチにプッシュ（通常はmainまたはmaster）
+git push origin main
+
+# または、ブランチ名が異なる場合
+# git push origin master
+```
+
+### 初回プッシュの場合
+
+リモートリポジトリが設定されていない場合：
+
+```powershell
+# リモートリポジトリを追加
+git remote add origin https://github.com/ユーザー名/リポジトリ名.git
+
+# ブランチ名をmainに設定（必要に応じて）
+git branch -M main
+
+# 初回プッシュ（-uオプションでupstreamを設定）
+git push -u origin main
+```
+
+### エラーが発生した場合
+
+#### ビルドエラー
+```powershell
+# エラーメッセージを確認して修正
+npm run build
+```
+
+#### プッシュエラー（リモートに新しい変更がある場合）
+```powershell
+# 1. リモートの最新を取得
+git pull origin main
+
+# 2. コンフリクトがあれば解決
+
+# 3. 再度プッシュ
+git push origin main
+```
+
+### デプロイ前チェックリスト
+
+- [ ] `npm run build` が正常に完了する
+- [ ] TypeScriptエラーがない（`npx tsc --noEmit`）
+- [ ] リンターエラーがない（`npm run lint`）
+- [ ] 変更をコミット済み
+- [ ] GitHubにプッシュ済み
+
+---
+
+## 📦 パッケージ管理
+
+### パッケージのインストール
+```powershell
+# 通常のインストール
+npm install
+
+# 特定のパッケージをインストール
+npm install <package-name>
+
+# 開発用パッケージをインストール
+npm install <package-name> --save-dev
+```
+
+### パッケージのアップデート
+```powershell
+# すべてのパッケージをアップデート
+npm update
+
+# 特定のパッケージをアップデート
+npm update <package-name>
+
+# 最新バージョンを確認
+npm outdated
+```
+
+### パッケージのアンインストール
+```powershell
+npm uninstall <package-name>
+```
+
+---
+
+## 🗄️ Supabase CLI
+
+### Supabaseにログイン
+```powershell
+npx supabase login
+```
+
+### プロジェクトにリンク
+```powershell
+npx supabase link --project-ref <project-ref>
+```
+
+### マイグレーションの実行
+```powershell
+# マイグレーションファイルをSupabaseに適用
+npx supabase db push
+
+# ローカルのマイグレーションファイルを作成
+npx supabase migration new <migration-name>
+```
+
+### データベースの状態を確認
+```powershell
+# リモートのマイグレーション履歴を確認
+npx supabase migration list
+
+# ローカルとリモートの差分を確認
+npx supabase db diff
+```
+
+---
+
+## 📊 パフォーマンス測定
+
+アプリケーションのパフォーマンスを監視・測定するための仕組みが実装されています。
+
+### Vercel Speed Insights
+
+Vercel Speed Insightsが自動的に有効化されており、本番環境でリアルタイムのパフォーマンスメトリクスを収集します。
+
+- **Core Web Vitals**: LCP, FID, CLSなどの指標を自動測定
+- **Vercelダッシュボード**: プロジェクトのダッシュボードでパフォーマンスデータを確認可能
+
+### カスタムパフォーマンス測定
+
+開発環境や本番環境で、カスタムのパフォーマンス測定を行うことができます。
+
+#### 使用方法
+
+```typescript
+import { perfMonitor } from '@/src/lib/utils/performance';
+
+// 処理の開始
+perfMonitor.start('処理名', { metadata: '追加情報' });
+
+// 処理の終了
+perfMonitor.end('処理名', { result: '結果' });
+
+// API呼び出しの測定
+const response = await perfMonitor.measureFetch(
+  'api.quotes',
+  fetch('/api/quotes')
+);
+```
+
+#### 測定対象
+
+現在、以下の処理が測定されています：
+
+- **APIルート**: `/api/quotes` のGETリクエスト
+  - データベースクエリ（見積、顧客、エンドユーザー）
+  - 全体の処理時間
+- **クライアント側**: ダッシュボードの見積データ取得
+- **ページロード**: 自動的にページ全体のロード時間を測定
+
+#### ログ出力
+
+開発環境では、以下のようにログが出力されます：
+
+- 🟢 **正常**: 500ms未満の処理
+- 🟡 **やや遅い**: 500ms〜1000msの処理
+- 🔴 **遅い**: 1000ms以上の処理
+
+#### 環境変数
+
+本番環境でもパフォーマンス測定を有効にする場合：
+
+```env
+NEXT_PUBLIC_ENABLE_PERF_MONITOR=true
+```
+
+#### キャッシュヘッダー
+
+APIルートにキャッシュヘッダーが追加されています：
+
+```typescript
+response.headers.set('Cache-Control', 'public, s-maxage=60, stale-while-revalidate=300');
+```
+
+これにより、60秒間はキャッシュされたレスポンスを返し、300秒間は古いキャッシュを返しながらバックグラウンドで更新します。
+
+---
+
+## 🔐 環境変数の確認
+
+### .env.localファイルの内容を確認
+```powershell
+# ファイル全体を表示
+Get-Content .env.local
+
+# 特定の変数を検索
+Get-Content .env.local | Select-String -Pattern "SUPABASE"
+```
+
+### 環境変数が読み込まれているか確認
+```powershell
+# ブラウザで以下にアクセス
+# http://localhost:3000/api/auth/check
+```
+
+---
+
+## 🧪 テスト・検証
+
+### 型チェック
+```powershell
+# TypeScriptの型エラーをチェック
+npx tsc --noEmit
+```
+
+### ESLintによる構文チェック
+```powershell
+# ESLintを実行
+npm run lint
+
+# 自動修正
+npm run lint -- --fix
+```
+
+### フォーマット（Prettierがインストールされている場合）
+```powershell
+# コードをフォーマット
+npx prettier --write .
+```
+
+---
+
+## 🚀 よく使う開発フロー
+
+### 朝の起動フロー
+```powershell
+# 1. プロジェクトディレクトリに移動
+cd C:\work\sales
+
+# 2. Gitで最新を取得（チーム開発の場合）
+git pull
+
+# 3. パッケージを更新（package.jsonが変更されている場合）
+npm install
+
+# 4. 開発サーバーを起動
+npm run dev
+```
+
+### エラー発生時の対処フロー
+```powershell
+# 1. Node.jsプロセスを全て停止
+Get-Process -Name node -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 2. キャッシュをクリア
+Remove-Item -Path .next -Recurse -Force -ErrorAction SilentlyContinue
+
+# 3. 開発サーバーを再起動
+npm run dev
+```
+
+### デプロイ前のチェックフロー
+```powershell
+# 1. 型チェック
+npx tsc --noEmit
+
+# 2. ESLintチェック
+npm run lint
+
+# 3. 本番ビルド
+npm run build
+
+# 4. ビルド結果を確認
+npm run start
+```
+
+---
+
+## 🔧 トラブルシューティング
+
+### 「ポートが既に使用されています」エラー
+```powershell
+# ポート3000を使用しているプロセスを確認して停止
+Get-NetTCPConnection -LocalPort 3000 -ErrorAction SilentlyContinue | ForEach-Object {
+    Stop-Process -Id $_.OwningProcess -Force
+}
+```
+
+### 「モジュールが見つかりません」エラー
+```powershell
+# node_modulesを再インストール
+Remove-Item -Path node_modules -Recurse -Force -ErrorAction SilentlyContinue
+npm install
+```
+
+### 「ロックファイルが見つかりません」エラー
+```powershell
+# .next/devフォルダのロックを削除
+Remove-Item -Path .next\dev -Recurse -Force -ErrorAction SilentlyContinue
+npm run dev
+```
+
+### ビルドが遅い・固まる
+```powershell
+# Turbopackを無効にして起動
+npm run dev -- --no-turbopack
+```
+
+---
+
+## 🚫 一時的なページ無効化（ビルドエラー回避）
+
+ビルドエラーが発生しているページを一時的に無効化して、動作している機能のみをデプロイする方法です。
+
+### 無効化の手順
+
+1. **エラーが出ているページファイルをリネーム**
+   ```powershell
+   # 例: orders関連のページを無効化
+   Rename-Item -Path "app\orders\page.tsx" -NewName "page.tsx.bak"
+   Rename-Item -Path "app\orders\[id]\page.tsx" -NewName "page.tsx.bak"
+   ```
+
+2. **Dashboard.tsxから該当ページへのリンクをコメントアウト**
+   - `src/components/screens/Dashboard.tsx`を開く
+   - エラーが出ているページへの`KintoneCard`をコメントアウト
+
+3. **routeMap.tsから該当ルートをコメントアウト**
+   - `src/lib/navigation/routeMap.ts`を開く
+   - エラーが出ているページのルート定義をコメントアウト
+
+### 復元の手順
+
+1. **リネームしたファイルを元に戻す**
+   ```powershell
+   # 例: orders関連のページを復元
+   Rename-Item -Path "app\orders\page.tsx.bak" -NewName "page.tsx"
+   Rename-Item -Path "app\orders\[id]\page.tsx.bak" -NewName "page.tsx"
+   ```
+
+2. **コメントアウトを解除**
+   - `Dashboard.tsx`と`routeMap.ts`のコメントアウトを解除
+
+### 現在無効化されているページ（例）
+
+以下のページは一時的に無効化されています：
+- 受注管理（orders）
+- 発注管理（purchase-orders）
+- 商品管理（products）
+- 案件管理（projects）
+- 粗利ダッシュボード（profit）
+- 製番部品台帳（parts）
+- 入荷・仕入管理（receivings）
+- 請求書管理（invoices）
+- 売上管理（sales）
+- サプライヤー管理（suppliers）
+
+### 動作している機能
+
+以下の機能は正常に動作しています：
+- ✅ 見積管理（quotes）
+- ✅ 顧客マスター（customers）
+- ✅ エンドユーザーマスター（end-users）
+- ✅ 品番マスター（part-numbers）
+- ✅ 販売店マスター（retailers）
+- ✅ テンプレートマスター（templates）
+
+---
+
+## 📝 メモ
+
+### 見積もり機能のパフォーマンス最適化（2024年実装完了）
+
+#### 実装内容
+- **Phase 1**: APIの並列実行化、ページネーション導入、必要なフィールドのみ取得
+- **Phase 2**: ダッシュボードのServer Component化、ISR導入
+
+#### パフォーマンス改善
+- 初回読み込み: 1200-1500ms → 200-300ms（約75-80%改善）
+- API応答時間: 800-1200ms → 150-250ms（約70-80%改善）
+- データ転送量: 約30-40%削減
+
+#### 変更されたファイル
+- `app/api/quotes/route.ts` - 並列実行、ページネーション、フィールド選択
+- `app/page.tsx` - Server Component化、ISR導入
+- `app/quotes/page.tsx` - ページネーション対応
+- `src/components/screens/QuoteList.tsx` - ページネーションUI追加
+- `app/_components/DashboardClient.tsx` - 新規作成
+
+#### 確認方法
+- ターミナルのパフォーマンスログを確認（🟢正常: 500ms未満）
+- ブラウザのNetworkタブでAPIリクエスト時間を確認
+- ページネーションUIが表示されることを確認
+
+---
+
+### よく使うURL
+- **開発サーバー**: http://localhost:3000
+- **ログインページ**: http://localhost:3000/login
+- **環境変数チェック**: http://localhost:3000/api/auth/check
+- **Supabaseダッシュボード**: https://app.supabase.com/
+- **Google Cloud Console**: https://console.cloud.google.com/
+
+### 重要なファイル
+- **環境変数**: `.env.local`（プロジェクトルート）
+- **パッケージ管理**: `package.json`
+- **TypeScript設定**: `tsconfig.json`
+- **Next.js設定**: `next.config.ts`
+
+---
+
+## 📌 GitHubプッシュ手順一覧（クイックリファレンス）
+
+### 通常のプッシュフロー（よく使う手順）
+```powershell
+# frontend ディレクトリで実行
+cd c:\zumen-connect\frontend
+
+# 1. 状態確認
+git status
+
+# 2. 全変更をステージング
+git add .
+
+# 3. コミット
+git commit -m "変更内容のメッセージ"
+
+# 4. プッシュ
+git push -u origin main
+```
+
+### 初回セットアップ時
+```powershell
+cd c:\zumen-connect\frontend
+
+# リモート追加（未設定の場合）
+git remote add origin https://github.com/imai1205/nextjs-zumen-connect.git
+
+# ブランチを main に
+git branch -M main
+
+# 初回プッシュ
+git push -u origin main
+```
+
+### リモートとの差分がある場合（強制上書き）
+```powershell
+# ローカルの内容でリモートを上書き
+git push -u origin main --force
+```
+※ 他メンバーがいる場合は要確認
+
+### プッシュ前チェック
+```powershell
+# ビルドが通るか確認
+npm run build
+
+# .gitignore に不要ファイル（Untitled 等）を追加しておく
+```
+
+### Vercel 環境変数の設定（ビルド・本番動作に必須）
+Vercel ダッシュボード → プロジェクト → Settings → Environment Variables で以下を追加：
+
+| 変数名 | 説明 |
+|--------|------|
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase プロジェクトURL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase 匿名キー |
+| `GCS_PROJECT_ID` | GCP プロジェクトID |
+| `GCS_BUCKET_NAME` | GCS バケット名 |
+| `GCS_SERVICE_ACCOUNT_KEY` | サービスアカウントJSON（1行に minify して貼り付け） |
+
+※ GCS_SERVICE_ACCOUNT_KEY: ダウンロードしたJSONを1行にまとめて貼る。コード側で `\\n` を `\n` に変換する処理あり（Vercel環境変数の改行問題対応）
+
+### Vercel デプロイのログ確認とデバッグ手順
+
+#### 1. ビルドログの確認
+```
+Vercel ダッシュボード → Deployments → 該当デプロイ → Building タブ
+```
+- TypeScript エラー、環境変数の未設定などを確認
+
+#### 2. 実行時ログの確認
+```
+Vercel ダッシュボード → Deployments → 該当デプロイ → Functions タブ
+または
+Settings → Logs
+```
+- API route の 500 エラー、GCS 認証エラーなどを確認
+- `console.log` / `console.error` の出力がここに表示される
+
+#### 3. GCS 認証エラーのデバッグ
+500 エラーで「署名付きURLの発行に失敗しました」が出る場合：
+
+1. **環境変数の確認**
+   - `GCS_SERVICE_ACCOUNT_KEY` が正しく設定されているか
+   - JSON形式が崩れていないか（特に `private_key` フィールド）
+
+2. **Vercel Functions ログで詳細を確認**
+   - 「GCS環境変数チェック」のログで全て「設定済み」になっているか
+   - 「GCS認証情報のパース成功」のログが出ているか
+   - 「private_key変換」のログで長さが変化しているか（改行置換が動いているか）
+
+3. **よくあるエラーと対処法**
+   | エラー | 原因 | 対処法 |
+   |--------|------|--------|
+   | `Unexpected token 'C'` / `"C:\zumen-k"...` | **ファイルパス**が入っている | JSONの中身を貼る。`npm run format-gcs-key -- "パス"` で1行取得 |
+   | `invalid_grant` | `private_key` の改行が壊れている | JSON を再コピペ、または `format-gcs-key.js` で再生成 |
+   | `ENOENT` または `keyFilename` エラー | 環境変数が未設定 or ファイルパス | JSONの中身を貼る |
+   | `Unauthorized` | サービスアカウントに権限がない | GCP で「Storage Object Admin」ロールを付与 |
+
+4. **ローカルで再現テスト**
+   ```powershell
+   # frontend/.env.local に同じ環境変数を設定
+   npm run dev
+   # アップロード機能をテスト
+   ```
+
+#### 4. 再デプロイのトリガー
+環境変数を変更した後は**必ず再デプロイ**が必要：
+```
+Vercel ダッシュボード → Deployments → 右上の「Redeploy」ボタン
+または
+git push でトリガー
+```
+
+### GCS_SERVICE_ACCOUNT_KEY の正しい設定手順（Vercel必須）
+
+⚠️ **ファイルパスは使えない**。Vercel本番環境ではローカルファイルにアクセスできません。
+
+**手順:**
+1. ローカルのJSONファイルを開く（例: `C:\zumen-keys\gcp\zumen-connect-0801-xxx.json`）
+2. 1行形式に変換してコピー:
+   ```powershell
+   cd frontend
+   node scripts/format-gcs-key.js "C:\zumen-keys\gcp\your-key.json"
+   ```
+3. 出力された1行全体をコピーし、Vercel の `GCS_SERVICE_ACCOUNT_KEY` に貼り付け
+4. クリップボードに直接コピーする場合:
+   ```powershell
+   node scripts/format-gcs-key.js "C:\zumen-keys\gcp\your-key.json" | Set-Clipboard
+   ```
+
+### Vercel 本番環境でよくある問題と対処法
+
+#### 再抽出「ワーカーへのジョブ依頼に失敗しました」
+
+**原因:** 再抽出は FastAPI バックエンドに依頼するが、`FASTAPI_URL` が `http://localhost:8000` のまま。Vercel上では localhost に何もない。
+
+**対処:**
+1. FastAPI を Cloud Run / Railway 等にデプロイ
+2. Vercel 環境変数で `FASTAPI_URL` を本番URLに設定（例: `https://xxx.run.app`）
+3. 当面再抽出を使わない場合はそのままでも可（図面表示・アップロードは別ルート）
+
+#### アップロード「Failed to fetch」
+
+**原因:** GCS バケットの CORS 設定がないと、ブラウザからGCSへの直接PUTがブロックされる。
+
+**対処（GCS バケットの CORS 設定）:**
+
+**方法A: gsutil を使う（gcloud SDK が入っている場合）**
+```powershell
+# frontend フォルダで実行。バケット名を実際の値に置き換え
+cd frontend
+gsutil cors set gcs-cors.json gs://バケット名
+```
+
+**方法B: GCP Console で手動設定**
+1. Google Cloud Console → Cloud Storage → 対象バケット
+2. 設定タブ → CORS の編集
+3. `frontend/gcs-cors.json` の内容をコピーして貼り付け、保存
+
+※ 本番では `gcs-cors.json` の `origin` を Vercel ドメイン等に限定することを推奨
+
+### アップロード動作確認手順
+
+CORS 設定後、以下で動作確認:
+1. /upload ページでファイルをアップロード
+2. ブラウザの開発者ツール → Network タブを開いた状態で実行
+3. 確認ポイント:
+   - `POST /api/upload/url` → ステータス 200
+   - `PUT https://storage.googleapis.com/...`（GCS への直接アップロード）→ ステータス 200
+   - `POST /api/upload/complete` → ステータス 200
+4. いずれかが失敗する場合、そのレスポンス内容を確認（CORS エラーは GCS の PUT で発生しやすい）
+
+### FastAPI backend を Cloud Run にデプロイする手順
+
+**前提:** `nextjs-zumen-connect` には frontend のみ。backend は別リポジトリが必要。
+
+**手順:**
+
+1. **GitHub に backend 用リポジトリを作成**
+   - 例: `imai1205/zumen-connect-backend`
+   - 中身は空でOK
+
+2. **backend フォルダで Git 初期化とプッシュ**
+   ```powershell
+   cd c:\zumen-connect\backend
+   git init
+   git add .
+   git commit -m "Initial backend for Cloud Run"
+   git branch -M main
+   git remote add origin https://github.com/imai1205/zumen-connect-backend.git
+   git push -u origin main
+   ```
+
+3. **Cloud Run のソースを backend リポジトリに変更**
+   - Cloud Run → fastapi-ocr サービス → 編集
+   - ソースを「zumen-connect-backend」に変更
+   - ビルド設定で Dockerfile を検出（ルートの Dockerfile が使われる）
+
+4. **Cloud Run の環境変数を設定**
+   - サービス詳細 → 変数とシークレット
+   - 追加: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, GCS_PROJECT_ID, GCS_BUCKET_NAME, GCS_SERVICE_ACCOUNT_KEY, GEMINI_API_KEY 等（backend/.env 参照）
+
+5. **Vercel の FASTAPI_URL を Cloud Run の URL に設定**
+   - 例: `https://fastapi-ocr-xxx.asia-northeast1.run.app`
+
+### よく使うコマンド早見表
+| 操作 | コマンド |
+|------|----------|
+| 状態確認 | `git status` |
+| リモート確認 | `git remote -v` |
+| ステージング | `git add .` |
+| コミット | `git commit -m "メッセージ"` |
+| プッシュ | `git push origin main` |
+| 強制プッシュ | `git push origin main --force` |
+
+---
+
+## 📚 参考リンク
+
+- [Next.js公式ドキュメント](https://nextjs.org/docs)
+- [Supabase公式ドキュメント](https://supabase.com/docs)
+- [PowerShellドキュメント](https://learn.microsoft.com/ja-jp/powershell/)
